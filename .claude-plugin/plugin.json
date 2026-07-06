@@ -1,0 +1,20 @@
+{
+  "name": "agent-statusline",
+  "version": "1.0.0",
+  "description": "Status line plugin that runs consistently on Claude Code and Antigravity (agy) — model, context, rate limits, cost, and a modular widget system with per-provider marks and colors",
+  "author": {
+    "name": "smbslt3"
+  },
+  "repository": "https://github.com/smbslt3/agent-statusline",
+  "license": "MIT",
+  "keywords": [
+    "statusline",
+    "claude-code",
+    "antigravity",
+    "agy",
+    "context",
+    "rate-limits",
+    "cost",
+    "multi-agent"
+  ]
+}

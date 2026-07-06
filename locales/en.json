@@ -1,0 +1,33 @@
+{
+  "labels": {
+    "5h": "5h",
+    "7d_all": "7d",
+    "7d_sonnet": "7d-S",
+    "7d_fable": "7d-F",
+    "extra": "extra",
+    "credits": "credits"
+  },
+  "time": {
+    "days": "d",
+    "hours": "h",
+    "minutes": "m"
+  },
+  "widgets": {
+    "tools": "Tools",
+    "done": "done",
+    "running": "running",
+    "agent": "Agent",
+    "todos": "Tasks",
+    "claudeMd": "CLAUDE.md",
+    "agentsMd": "AGENTS.md",
+    "addedDirs": "+Dirs",
+    "rules": "Rules",
+    "mcps": "MCP",
+    "hooks": "Hooks",
+    "todayCost": "Today",
+    "apiDuration": "API",
+    "working": "working",
+    "subagents": "subagent",
+    "bgTask": "task"
+  }
+}

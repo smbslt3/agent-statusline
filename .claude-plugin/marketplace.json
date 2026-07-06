@@ -1,0 +1,31 @@
+{
+  "name": "agent-statusline",
+  "owner": {
+    "name": "smbslt3",
+    "email": ""
+  },
+  "metadata": {
+    "description": "Status line plugin that runs consistently on Claude Code and Antigravity (agy) — model, context, rate limits, cost, and a modular widget system with per-provider marks and colors",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-statusline",
+      "source": "./",
+      "description": "Real-time status line showing model, context, color-coded progress bar, cost, and API rate limits (5h/7d), running consistently on both Claude Code and Antigravity (agy) with per-provider marks and colors. Plan auto-detected.",
+      "category": "monitoring",
+      "tags": [
+        "statusline",
+        "monitoring",
+        "context",
+        "rate-limits",
+        "cost",
+        "claude-code",
+        "antigravity",
+        "agy",
+        "multi-agent"
+      ]
+    }
+  ],
+  "version": "1.0.0"
+}

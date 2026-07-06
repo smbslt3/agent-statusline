@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Build output — dist/ is committed on purpose (plugin users don't build)
+# dist/
+
+# Caches
+coverage/
+*.cache.json
+cache-*.json
+.cache/
+/tmp/agent-statusline-cache.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Media / scratch
+*.mov
+.private/
+
+# Internal / dev-only — kept locally, not published to GitHub
+/CLAUDE.md
+/docs/discovery/
+# Claude Code uses the marketplace + /agent-statusline:setup; these direct-wire
+# scripts are a local-testing shortcut only (agy still needs install-agy.*).
+/install-claude.ps1
+/install-claude.sh
+# SVG generation utility — run locally, output (docs/*.svg) is committed
+/scripts/gen-svg.js
+
+# Analysis / Local reports
+workspace_analysis_report.md
+
+# Claude local configs
+.claude/
+
+# Temporary / Scratch scripts
+/scratch/
+
