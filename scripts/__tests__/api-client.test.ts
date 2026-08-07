@@ -207,6 +207,127 @@ describe('api-client', () => {
       expect(result).toBeNull();
     });
 
+    it('honors a long retry-after as the negative-cache TTL instead of retrying after 30s', async () => {
+      const { getCredentials } = await import('../utils/credentials.js');
+      vi.mocked(getCredentials).mockResolvedValue('retry-after-backoff-token');
+      await deleteFileCacheForToken('retry-after-backoff-token');
+
+      // Mirrors the live endpoint: 429 + `retry-after: 201`.
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '201']]),
+      });
+      global.fetch = fetchMock;
+
+      const { fetchUsageLimits, clearCache } = await import('../utils/api-client.js');
+      clearCache();
+
+      vi.useFakeTimers();
+      try {
+        await fetchUsageLimits();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // Past NEGATIVE_CACHE_SECONDS (30s) but well inside the server's 201s
+        // window — re-requesting here is what keeps the account rate-limited.
+        await vi.advanceTimersByTimeAsync(31_000);
+        await fetchUsageLimits();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // Once the server's window elapses, we are allowed to try again.
+        await vi.advanceTimersByTimeAsync(180_000);
+        await fetchUsageLimits();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await deleteFileCacheForToken('retry-after-backoff-token');
+    });
+
+    it('persists the retry-after backoff across processes (Claude renders one process per line)', async () => {
+      const token = 'retry-after-crossprocess-token';
+      await deleteFileCacheForToken(token);
+
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '201']]),
+      });
+      global.fetch = fetchMock;
+
+      // "Process" 1: trips the 429 and records the backoff.
+      {
+        const { getCredentials } = await import('../utils/credentials.js');
+        vi.mocked(getCredentials).mockResolvedValue(token);
+        const { fetchUsageLimits, clearCache } = await import('../utils/api-client.js');
+        clearCache();
+        expect(await fetchUsageLimits()).toBeNull();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      }
+
+      // "Process" 2: a fresh module instance — empty memory cache, same cache
+      // dir. It must observe the recorded backoff and NOT hit the endpoint.
+      vi.resetModules();
+      {
+        const { getCredentials } = await import('../utils/credentials.js');
+        vi.mocked(getCredentials).mockResolvedValue(token);
+        const { fetchUsageLimits } = await import('../utils/api-client.js');
+        expect(await fetchUsageLimits()).toBeNull();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      }
+
+      await deleteFileCacheForToken(token);
+    });
+
+    it('serves stale cached limits while the retry-after backoff is active', async () => {
+      const token = 'retry-after-stale-token';
+      const tokenHash = hashToken(token);
+
+      const { getCredentials } = await import('../utils/credentials.js');
+      vi.mocked(getCredentials).mockResolvedValue(token);
+
+      // A cache older than the 300s TTL but inside the 3600s stale window.
+      await mkdir(ACTUAL_CACHE_DIR, { recursive: true, mode: 0o700 });
+      await writeFile(
+        path.join(ACTUAL_CACHE_DIR, `cache-${tokenHash}.json`),
+        JSON.stringify({
+          data: {
+            five_hour: { utilization: 7, resets_at: '2026-08-07T18:20:00Z' },
+            seven_day: null,
+            seven_day_sonnet: null,
+            seven_day_fable: null,
+          },
+          timestamp: Date.now() - 600_000,
+        }),
+        { mode: 0o600 }
+      );
+
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Map([['retry-after', '201']]),
+      });
+      global.fetch = fetchMock;
+
+      const { fetchUsageLimits, clearCache } = await import('../utils/api-client.js');
+      clearCache();
+
+      // Trips the backoff, still degrades to stale data rather than nothing.
+      expect((await fetchUsageLimits())?.five_hour?.utilization).toBe(7);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Backoff active in a fresh process: no request, still stale data.
+      vi.resetModules();
+      const { getCredentials: getCreds2 } = await import('../utils/credentials.js');
+      vi.mocked(getCreds2).mockResolvedValue(token);
+      const { fetchUsageLimits: fetch2 } = await import('../utils/api-client.js');
+      expect((await fetch2())?.five_hour?.utilization).toBe(7);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await deleteFileCacheForToken(token);
+    });
+
     it('should not retry when retry-after header is missing', async () => {
       const { getCredentials } = await import('../utils/credentials.js');
       vi.mocked(getCredentials).mockResolvedValue('retry-noheader-token');

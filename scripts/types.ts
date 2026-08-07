@@ -470,7 +470,17 @@ export const NEGATIVE_CACHE_SECONDS = 30;
  */
 export type CacheEntry<T> =
   | { data: T; timestamp: number; isError?: false }
-  | { data: null; timestamp: number; isError: true };
+  | {
+      data: null;
+      timestamp: number;
+      isError: true;
+      /**
+       * Seconds the server asked us to wait (HTTP 429 `retry-after`), when it
+       * said so. Overrides NEGATIVE_CACHE_SECONDS for this entry so we don't
+       * retry sooner than allowed and keep the account rate-limited.
+       */
+      retryAfterSeconds?: number;
+    };
 
 /**
  * Widget context passed to all widgets

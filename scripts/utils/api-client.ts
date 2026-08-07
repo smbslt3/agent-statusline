@@ -3,6 +3,7 @@
  * @tested scripts/__tests__/api-client.test.ts
  */
 import { execFile } from 'child_process';
+import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { NEGATIVE_CACHE_SECONDS, type UsageLimits, type ExtraUsage, type CacheEntry } from '../types.js';
 import { getCredentials } from './credentials.js';
@@ -23,6 +24,14 @@ const MAX_RETRY_AFTER_MS = 10000;
 const STALE_FALLBACK_SECONDS = STALE_CACHE_TTL_SECONDS;
 
 /**
+ * Ceiling on a recorded 429 backoff. The endpoint is aggressively rate limited
+ * (observed: ~5 requests, then 429 with `retry-after: 201`), but an absurd or
+ * hostile header value must not be able to wedge usage data off the status line
+ * indefinitely — past this point we try again regardless.
+ */
+const MAX_BACKOFF_SECONDS = STALE_CACHE_TTL_SECONDS;
+
+/**
  * In-memory cache Map: tokenHash -> CacheEntry
  */
 const usageCacheMap: Map<string, CacheEntry<UsageLimits>> = new Map();
@@ -31,7 +40,18 @@ const usageCacheMap: Map<string, CacheEntry<UsageLimits>> = new Map();
  * Pending API requests Map: tokenHash -> Promise
  * Prevents duplicate concurrent requests for the same token
  */
-const pendingRequests: Map<string, Promise<UsageLimits | null>> = new Map();
+const pendingRequests: Map<string, Promise<FetchOutcome>> = new Map();
+
+/**
+ * Result of one API attempt: the parsed limits (null on any failure) plus the
+ * server's `retry-after` when it answered 429. The retry-after has to travel
+ * back to the caller so it can size the negative cache — discarding it is what
+ * turns a single 429 into a sustained lockout.
+ */
+interface FetchOutcome {
+  limits: UsageLimits | null;
+  retryAfterSeconds?: number;
+}
 
 /**
  * Last used token hash for fallback when credentials are unavailable
@@ -47,15 +67,78 @@ function getCacheFilePath(tokenHash: string): string {
 }
 
 /**
+ * Path of the cross-process 429 backoff marker for a token.
+ *
+ * Deliberately shares the `cache-` prefix so the existing cleanup sweep
+ * (CLEANABLE_PREFIXES in file-cache.ts) reaps it without a new entry.
+ */
+function getBackoffFilePath(tokenHash: string): string {
+  return fileCachePath(`cache-${tokenHash}-backoff.json`);
+}
+
+/** Absolute instant (epoch ms) until which requests for a token are barred. */
+interface BackoffMarker {
+  untilMs: number;
+}
+
+/**
+ * Read the recorded 429 backoff for a token, or null when none is active.
+ *
+ * This is a FILE, not just memory, because of how the two hosts invoke us: on
+ * Claude Code every status line render is a brand-new process, so an in-memory
+ * negative cache is discarded before it can suppress anything and each render
+ * would re-hit an endpoint that already told us to wait. The marker is what
+ * makes the backoff hold across renders.
+ */
+async function loadBackoffUntil(tokenHash: string): Promise<number | null> {
+  const entry = await loadFileCacheGeneric<BackoffMarker>(
+    getBackoffFilePath(tokenHash),
+    MAX_BACKOFF_SECONDS
+  );
+  const untilMs = entry?.data?.untilMs;
+  if (typeof untilMs !== 'number') return null;
+  return untilMs > Date.now() ? untilMs : null;
+}
+
+/**
+ * Record a 429 backoff for `retryAfterSeconds` (clamped to MAX_BACKOFF_SECONDS)
+ * so every process honors the server's wait instead of re-requesting.
+ */
+async function saveBackoff(tokenHash: string, retryAfterSeconds: number): Promise<void> {
+  const seconds = Math.min(retryAfterSeconds, MAX_BACKOFF_SECONDS);
+  await saveFileCacheGeneric<BackoffMarker>(getBackoffFilePath(tokenHash), {
+    untilMs: Date.now() + seconds * 1000,
+  });
+}
+
+/**
+ * Drop a stale backoff marker after a successful fetch, so a long `retry-after`
+ * recorded earlier can't bar requests once the limit has actually lifted.
+ * Best-effort: a missing file (the common case) is not an error.
+ */
+async function clearBackoff(tokenHash: string): Promise<void> {
+  try {
+    await unlink(getBackoffFilePath(tokenHash));
+  } catch {
+    // No marker to clear.
+  }
+}
+
+/**
  * Check if cache is still valid for given token.
- * Error entries use a shorter TTL (NEGATIVE_CACHE_SECONDS) to allow
- * retries after a brief cooldown, while preventing rapid-fire API calls.
+ *
+ * Error entries normally use a shorter TTL (NEGATIVE_CACHE_SECONDS) so a
+ * transient failure clears quickly. When the server answered 429 with a
+ * `retry-after`, that value wins instead: retrying sooner than asked is what
+ * keeps the account pinned in the rate-limited bucket.
  */
 function isCacheValid(tokenHash: string, ttlSeconds: number): boolean {
   const cache = usageCacheMap.get(tokenHash);
   if (!cache) return false;
   const ageSeconds = (Date.now() - cache.timestamp) / 1000;
-  const effectiveTtl = cache.isError ? NEGATIVE_CACHE_SECONDS : ttlSeconds;
+  const effectiveTtl = cache.isError
+    ? Math.max(NEGATIVE_CACHE_SECONDS, cache.retryAfterSeconds ?? 0)
+    : ttlSeconds;
   return ageSeconds < effectiveTtl;
 }
 
@@ -103,10 +186,20 @@ export async function fetchUsageLimits(ttlSeconds: number = 300): Promise<UsageL
     return fileCacheRaw.data;
   }
 
+  // A 429 `retry-after` recorded by ANY process (including an earlier render)
+  // bars new requests until it elapses. Without this the endpoint would be hit
+  // once per status line render while it is already rate-limiting us, which is
+  // what turns one 429 into a sustained lockout. Degrade to stale data.
+  const backoffUntil = await loadBackoffUntil(tokenHash);
+  if (backoffUntil) {
+    debugLog('api', `429 backoff active for ${Math.ceil((backoffUntil - Date.now()) / 1000)}s`);
+    return loadFileCache(tokenHash, STALE_FALLBACK_SECONDS);
+  }
+
   // Check if there's already a pending request for this token
   const pending = pendingRequests.get(tokenHash);
   if (pending) {
-    return pending;
+    return (await pending).limits;
   }
 
   // Create new API request
@@ -114,19 +207,26 @@ export async function fetchUsageLimits(ttlSeconds: number = 300): Promise<UsageL
   pendingRequests.set(tokenHash, requestPromise);
 
   try {
-    const result = await requestPromise;
-    if (result) return result;
+    const { limits, retryAfterSeconds } = await requestPromise;
+    if (limits) return limits;
 
     // Save stale reference before overwriting with negative cache
     const staleMemory = usageCacheMap.get(tokenHash);
 
-    // API failed - set negative cache to prevent rapid retries
-    debugLog('api', `Setting negative cache for ${NEGATIVE_CACHE_SECONDS}s`);
+    // API failed - set negative cache to prevent rapid retries. A 429's
+    // `retry-after` takes precedence over NEGATIVE_CACHE_SECONDS and is also
+    // persisted, so sibling/future processes back off too.
+    const backoffSeconds = Math.max(NEGATIVE_CACHE_SECONDS, retryAfterSeconds ?? 0);
+    debugLog('api', `Setting negative cache for ${backoffSeconds}s`);
     usageCacheMap.set(tokenHash, {
       data: null,
       timestamp: Date.now(),
       isError: true,
+      retryAfterSeconds,
     });
+    if (retryAfterSeconds !== undefined) {
+      await saveBackoff(tokenHash, retryAfterSeconds);
+    }
 
     // Fall back to stale cache
     if (staleMemory && !staleMemory.isError) return staleMemory.data;
@@ -261,9 +361,12 @@ async function makeRequestViaCurl(token: string): Promise<{ ok: boolean; status:
  * Internal function to fetch from API with single retry on 429
  * and curl fallback on 403 (TLS fingerprint rejection)
  */
-async function fetchFromApi(token: string, tokenHash: string): Promise<UsageLimits | null> {
+async function fetchFromApi(token: string, tokenHash: string): Promise<FetchOutcome> {
   try {
     let response = await makeRequest(token);
+    // Kept across the inline retry so a still-429 second response reports its
+    // own wait, and a recovered one reports none.
+    let retryAfterSeconds: number | undefined;
 
     // Retry once on 429 if retry-after is short enough
     if (response.status === 429) {
@@ -272,14 +375,25 @@ async function fetchFromApi(token: string, tokenHash: string): Promise<UsageLimi
         debugLog('api', '429 received, no retry-after header, skipping');
       } else {
         const retryAfter = parseInt(retryAfterHeader, 10);
-        if (!isNaN(retryAfter) && retryAfter * 1000 <= MAX_RETRY_AFTER_MS) {
+        if (isNaN(retryAfter)) {
+          debugLog('api', '429 received, unparseable retry-after, skipping');
+        } else if (retryAfter * 1000 <= MAX_RETRY_AFTER_MS) {
           debugLog('api', `429 received, retrying after ${retryAfter}s`);
           await new Promise((r) => setTimeout(r, retryAfter * 1000));
           response = await makeRequest(token);
         } else {
-          debugLog('api', `429 received, retry-after ${retryAfter}s exceeds limit, skipping`);
+          // Too long to wait inline. Report it so the caller can back off for
+          // the full duration rather than retrying on the next render.
+          debugLog('api', `429 received, backing off for ${retryAfter}s`);
+          retryAfterSeconds = retryAfter;
         }
       }
+    }
+
+    // A second 429 after the inline retry: surface its wait too.
+    if (response.status === 429 && retryAfterSeconds === undefined) {
+      const second = parseInt(response.headers.get('retry-after') ?? '', 10);
+      if (!isNaN(second)) retryAfterSeconds = second;
     }
 
     // On 403, Node's TLS fingerprint may be rejected — fall back to curl
@@ -287,21 +401,27 @@ async function fetchFromApi(token: string, tokenHash: string): Promise<UsageLimi
       debugLog('api', '403 from fetch, trying curl fallback');
       const curlResult = await makeRequestViaCurl(token);
       if (curlResult?.ok) {
-        return parseAndCacheLimits(curlResult.data, tokenHash);
+        const viaCurl = await parseAndCacheLimits(curlResult.data, tokenHash);
+        await clearBackoff(tokenHash);
+        return { limits: viaCurl };
       }
       debugLog('api', `curl fallback ${curlResult ? `returned ${curlResult.status}` : 'failed'}`);
-      return null;
+      return { limits: null };
     }
 
     if (!response.ok) {
-      return null;
+      return { limits: null, retryAfterSeconds };
     }
 
     const data = await response.json();
-    return parseAndCacheLimits(data, tokenHash);
+    const limits = await parseAndCacheLimits(data, tokenHash);
+    // Success — retire any backoff recorded earlier so a long `retry-after`
+    // can't keep barring requests after the limit has actually lifted.
+    await clearBackoff(tokenHash);
+    return { limits };
   } catch (error) {
     debugLog('api', 'Request failed', error);
-    return null;
+    return { limits: null };
   }
 }
 

@@ -483,6 +483,7 @@ var ICON = {
 
 // scripts/utils/api-client.ts
 import { execFile as execFile2 } from "child_process";
+import { unlink as unlink2 } from "fs/promises";
 import { join as join2 } from "path";
 
 // scripts/utils/credentials.ts
@@ -707,18 +708,44 @@ var API_URL = "https://api.anthropic.com/api/oauth/usage";
 var API_TIMEOUT_MS = 5e3;
 var MAX_RETRY_AFTER_MS = 1e4;
 var STALE_FALLBACK_SECONDS = STALE_CACHE_TTL_SECONDS;
+var MAX_BACKOFF_SECONDS = STALE_CACHE_TTL_SECONDS;
 var usageCacheMap = /* @__PURE__ */ new Map();
 var pendingRequests = /* @__PURE__ */ new Map();
 var lastTokenHash = null;
 function getCacheFilePath(tokenHash) {
   return fileCachePath(`cache-${tokenHash}.json`);
 }
+function getBackoffFilePath(tokenHash) {
+  return fileCachePath(`cache-${tokenHash}-backoff.json`);
+}
+async function loadBackoffUntil(tokenHash) {
+  const entry = await loadFileCache(
+    getBackoffFilePath(tokenHash),
+    MAX_BACKOFF_SECONDS
+  );
+  const untilMs = entry?.data?.untilMs;
+  if (typeof untilMs !== "number")
+    return null;
+  return untilMs > Date.now() ? untilMs : null;
+}
+async function saveBackoff(tokenHash, retryAfterSeconds) {
+  const seconds = Math.min(retryAfterSeconds, MAX_BACKOFF_SECONDS);
+  await saveFileCache(getBackoffFilePath(tokenHash), {
+    untilMs: Date.now() + seconds * 1e3
+  });
+}
+async function clearBackoff(tokenHash) {
+  try {
+    await unlink2(getBackoffFilePath(tokenHash));
+  } catch {
+  }
+}
 function isCacheValid(tokenHash, ttlSeconds) {
   const cache = usageCacheMap.get(tokenHash);
   if (!cache)
     return false;
   const ageSeconds = (Date.now() - cache.timestamp) / 1e3;
-  const effectiveTtl = cache.isError ? NEGATIVE_CACHE_SECONDS : ttlSeconds;
+  const effectiveTtl = cache.isError ? Math.max(NEGATIVE_CACHE_SECONDS, cache.retryAfterSeconds ?? 0) : ttlSeconds;
   return ageSeconds < effectiveTtl;
 }
 async function fetchUsageLimits(ttlSeconds = 300) {
@@ -751,23 +778,33 @@ async function fetchUsageLimits(ttlSeconds = 300) {
     usageCacheMap.set(tokenHash, { data: fileCacheRaw.data, timestamp: fileCacheRaw.timestamp });
     return fileCacheRaw.data;
   }
+  const backoffUntil = await loadBackoffUntil(tokenHash);
+  if (backoffUntil) {
+    debugLog("api", `429 backoff active for ${Math.ceil((backoffUntil - Date.now()) / 1e3)}s`);
+    return loadFileCache2(tokenHash, STALE_FALLBACK_SECONDS);
+  }
   const pending = pendingRequests.get(tokenHash);
   if (pending) {
-    return pending;
+    return (await pending).limits;
   }
   const requestPromise = fetchFromApi(token, tokenHash);
   pendingRequests.set(tokenHash, requestPromise);
   try {
-    const result = await requestPromise;
-    if (result)
-      return result;
+    const { limits, retryAfterSeconds } = await requestPromise;
+    if (limits)
+      return limits;
     const staleMemory = usageCacheMap.get(tokenHash);
-    debugLog("api", `Setting negative cache for ${NEGATIVE_CACHE_SECONDS}s`);
+    const backoffSeconds = Math.max(NEGATIVE_CACHE_SECONDS, retryAfterSeconds ?? 0);
+    debugLog("api", `Setting negative cache for ${backoffSeconds}s`);
     usageCacheMap.set(tokenHash, {
       data: null,
       timestamp: Date.now(),
-      isError: true
+      isError: true,
+      retryAfterSeconds
     });
+    if (retryAfterSeconds !== void 0) {
+      await saveBackoff(tokenHash, retryAfterSeconds);
+    }
     if (staleMemory && !staleMemory.isError)
       return staleMemory.data;
     const staleFile = await loadFileCache2(tokenHash, STALE_FALLBACK_SECONDS);
@@ -867,38 +904,51 @@ async function makeRequestViaCurl(token) {
 async function fetchFromApi(token, tokenHash) {
   try {
     let response = await makeRequest(token);
+    let retryAfterSeconds;
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get("retry-after");
       if (retryAfterHeader === null) {
         debugLog("api", "429 received, no retry-after header, skipping");
       } else {
         const retryAfter = parseInt(retryAfterHeader, 10);
-        if (!isNaN(retryAfter) && retryAfter * 1e3 <= MAX_RETRY_AFTER_MS) {
+        if (isNaN(retryAfter)) {
+          debugLog("api", "429 received, unparseable retry-after, skipping");
+        } else if (retryAfter * 1e3 <= MAX_RETRY_AFTER_MS) {
           debugLog("api", `429 received, retrying after ${retryAfter}s`);
           await new Promise((r) => setTimeout(r, retryAfter * 1e3));
           response = await makeRequest(token);
         } else {
-          debugLog("api", `429 received, retry-after ${retryAfter}s exceeds limit, skipping`);
+          debugLog("api", `429 received, backing off for ${retryAfter}s`);
+          retryAfterSeconds = retryAfter;
         }
       }
+    }
+    if (response.status === 429 && retryAfterSeconds === void 0) {
+      const second = parseInt(response.headers.get("retry-after") ?? "", 10);
+      if (!isNaN(second))
+        retryAfterSeconds = second;
     }
     if (response.status === 403) {
       debugLog("api", "403 from fetch, trying curl fallback");
       const curlResult = await makeRequestViaCurl(token);
       if (curlResult?.ok) {
-        return parseAndCacheLimits(curlResult.data, tokenHash);
+        const viaCurl = await parseAndCacheLimits(curlResult.data, tokenHash);
+        await clearBackoff(tokenHash);
+        return { limits: viaCurl };
       }
       debugLog("api", `curl fallback ${curlResult ? `returned ${curlResult.status}` : "failed"}`);
-      return null;
+      return { limits: null };
     }
     if (!response.ok) {
-      return null;
+      return { limits: null, retryAfterSeconds };
     }
     const data = await response.json();
-    return parseAndCacheLimits(data, tokenHash);
+    const limits = await parseAndCacheLimits(data, tokenHash);
+    await clearBackoff(tokenHash);
+    return { limits };
   } catch (error) {
     debugLog("api", "Request failed", error);
-    return null;
+    return { limits: null };
   }
 }
 function validateLimitWindow(raw) {
@@ -2568,7 +2618,7 @@ var configCountsWidget = {
 };
 
 // scripts/utils/session.ts
-import { readFile as readFile7, mkdir as mkdir2, open, readdir as readdir3, unlink as unlink2, stat as stat7 } from "fs/promises";
+import { readFile as readFile7, mkdir as mkdir2, open, readdir as readdir3, unlink as unlink3, stat as stat7 } from "fs/promises";
 import { join as join6 } from "path";
 import { homedir as homedir4 } from "os";
 var SESSION_DIR = join6(homedir4(), ".cache", "agent-statusline", "sessions");
@@ -2677,7 +2727,7 @@ async function cleanupExpiredSessions() {
         const filePath = join6(SESSION_DIR, file);
         const fileStat = await stat7(filePath);
         if (fileStat.mtimeMs < cutoffTime) {
-          await unlink2(filePath);
+          await unlink3(filePath);
           debugLog("session", `Cleaned up expired session: ${file}`);
         }
       } catch {
