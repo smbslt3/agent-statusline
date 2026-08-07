@@ -614,7 +614,7 @@ async function findExecutable(names) {
 }
 
 // scripts/version.ts
-var VERSION = "1.0.0";
+var VERSION = "1.0.1";
 
 // scripts/utils/debug.ts
 var DEBUG = process.env.DEBUG === "agent-statusline" || process.env.DEBUG === "1" || process.env.DEBUG === "true";
