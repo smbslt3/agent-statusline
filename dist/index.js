@@ -614,7 +614,7 @@ async function findExecutable(names) {
 }
 
 // scripts/version.ts
-var VERSION = "1.0.1";
+var VERSION = "1.0.2";
 
 // scripts/utils/debug.ts
 var DEBUG = process.env.DEBUG === "agent-statusline" || process.env.DEBUG === "1" || process.env.DEBUG === "true";
@@ -1869,11 +1869,20 @@ function osc8Link(url, text) {
 }
 
 // scripts/widgets/model.ts
-var EFFORT_LEVELS = /* @__PURE__ */ new Set(["xhigh", "high", "medium", "low"]);
+var EFFORT_LEVELS = /* @__PURE__ */ new Set(["ultracode", "max", "xhigh", "high", "medium", "low"]);
+var PERSISTED_EFFORT_LEVELS = /* @__PURE__ */ new Set(["xhigh", "high", "medium", "low"]);
 function isEffortLevel(value) {
   return typeof value === "string" && EFFORT_LEVELS.has(value);
 }
+function isPersistedEffortLevel(value) {
+  return typeof value === "string" && PERSISTED_EFFORT_LEVELS.has(value);
+}
+function isEnvironmentEffortLevel(value) {
+  return isEffortLevel(value) && value !== "ultracode";
+}
 var EFFORT_BADGE = {
+  ultracode: "U",
+  max: "M",
   xhigh: "xH",
   high: "H",
   medium: "M",
@@ -1915,11 +1924,12 @@ var settingsCache = null;
 async function getModelSettings(modelId) {
   const defaultEffort = getDefaultEffort(modelId);
   const settingsPath = join3(homedir2(), ".claude", "settings.json");
+  const envEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
   try {
     const fileStat = await stat4(settingsPath);
     if (settingsCache && settingsCache.mtime === fileStat.mtimeMs) {
       return {
-        effortLevel: isEffortLevel(settingsCache.rawEffort) ? settingsCache.rawEffort : defaultEffort,
+        effortLevel: isEnvironmentEffortLevel(envEffort) ? envEffort : isPersistedEffortLevel(settingsCache.rawEffort) ? settingsCache.rawEffort : defaultEffort,
         fastMode: settingsCache.fastMode
       };
     }
@@ -1929,14 +1939,13 @@ async function getModelSettings(modelId) {
     const fastMode = settings.fastMode === true;
     settingsCache = { mtime: fileStat.mtimeMs, rawEffort, fastMode };
     return {
-      effortLevel: isEffortLevel(rawEffort) ? rawEffort : defaultEffort,
+      effortLevel: isEnvironmentEffortLevel(envEffort) ? envEffort : isPersistedEffortLevel(rawEffort) ? rawEffort : defaultEffort,
       fastMode
     };
   } catch {
     settingsCache = null;
   }
-  const envEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
-  if (isEffortLevel(envEffort)) {
+  if (isEnvironmentEffortLevel(envEffort)) {
     return { effortLevel: envEffort, fastMode: false };
   }
   return { effortLevel: defaultEffort, fastMode: false };
@@ -1951,7 +1960,10 @@ var modelWidget = {
     if (isAgyHost(ctx.stdin)) {
       return { id: modelId, displayName, effortLevel: "high", fastMode: false };
     }
-    const { effortLevel, fastMode } = await getModelSettings(modelId);
+    const settings = await getModelSettings(modelId);
+    const liveEffort = ctx.stdin.effort?.level;
+    const effortLevel = isEffortLevel(liveEffort) ? liveEffort : settings.effortLevel;
+    const fastMode = ctx.stdin.fast_mode ?? settings.fastMode;
     return {
       id: modelId,
       displayName,
