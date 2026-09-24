@@ -57,6 +57,10 @@ export interface StdinInput {
   transcript_path?: string;
   /** Claude Code version string */
   version?: string;
+  /** 현재 세션에서 Claude Code가 상태줄에 전달하는 effort */
+  effort?: { level: string };
+  /** 현재 세션의 fast mode */
+  fast_mode?: boolean;
   /** Whether total tokens from most recent API response exceeds 200k (fixed threshold) */
   exceeds_200k_tokens?: boolean;
   /**
@@ -505,7 +509,7 @@ export interface WidgetContext {
 /**
  * Widget data types for each widget
  */
-export type EffortLevel = 'xhigh' | 'high' | 'medium' | 'low';
+export type EffortLevel = 'ultracode' | 'max' | 'xhigh' | 'high' | 'medium' | 'low';
 
 export interface ModelData {
   id: string;

@@ -136,7 +136,7 @@ describe('widgets', () => {
       expect(data).toEqual({
         id: '',
         displayName: '-',
-        effortLevel: expect.stringMatching(/^(xhigh|high|medium|low)$/),
+        effortLevel: expect.stringMatching(/^(ultracode|max|xhigh|high|medium|low)$/),
         fastMode: expect.any(Boolean),
       });
     });
@@ -148,6 +148,41 @@ describe('widgets', () => {
       expect(data).not.toBeNull();
       expect(data?.id).toBe('claude-sonnet-3.5');
       expect(data?.displayName).toBe('Claude 3.5 Sonnet');
+    });
+
+    it('should show the live max effort even when saved settings differ', async () => {
+      const ctx = createContext({
+        model: { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7' },
+        effort: { level: 'max' },
+        fast_mode: true,
+      });
+      const data = await modelWidget.getData(ctx);
+
+      expect(data?.effortLevel).toBe('max');
+      expect(data?.fastMode).toBe(true);
+      expect(stripAnsi(modelWidget.render(data!, ctx))).toContain('Opus (M) ↯');
+    });
+
+    it('should show ultracode when Claude reports it for the current session', async () => {
+      const ctx = createContext({
+        model: { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7' },
+        effort: { level: 'ultracode' },
+      });
+      const data = await modelWidget.getData(ctx);
+
+      expect(data?.effortLevel).toBe('ultracode');
+      expect(stripAnsi(modelWidget.render(data!, ctx))).toContain('Opus (U)');
+    });
+
+    it('should keep the reported effort when ultracode was not selected for the session', async () => {
+      const ctx = createContext({
+        model: { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7' },
+        effort: { level: 'xhigh' },
+      });
+      const data = await modelWidget.getData(ctx);
+
+      expect(data?.effortLevel).toBe('xhigh');
+      expect(stripAnsi(modelWidget.render(data!, ctx))).toContain('Opus (xH)');
     });
 
     it('should render shortened model name with effort for Sonnet', () => {

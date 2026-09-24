@@ -7,10 +7,8 @@
  * you're in); on Claude Code it is always `✽` coral. Only the model NAME follows
  * the model (e.g. `Λ Opus`, `Λ Gemini 3.5 Flash (H)`, `✽ Opus (xH)`).
  *
- * Effort level: Shown for Opus, Sonnet, and Fable as (xH/H/M/L), hidden for
- * Haiku. The `xhigh` tier is available on Opus, Sonnet 5+, and Fable, so on
- * older Sonnet a global xhigh setting is shown as the (H) it actually runs at
- * (see effectiveEffort / supportsXhigh).
+ * Claude Code의 현재 effort를 상태줄 입력에서 읽고 (U/M/xH/H/M/L)로 표시한다.
+ * Haiku에는 배지를 표시하지 않는다. xhigh를 지원하지 않는 Sonnet은 (H)로 표시한다.
  * Fast mode: Opus 4.6 exclusive feature, indicated by ↯ symbol
  * @tested scripts/__tests__/widgets.test.ts
  */
@@ -24,18 +22,27 @@ import { shortenModelName, sanitizeText } from '../utils/formatters.js';
 import { providerMark, providerName } from '../utils/provider.js';
 import { isAgyHost } from '../utils/agy-stdin.js';
 
-const EFFORT_LEVELS = new Set<string>(['xhigh', 'high', 'medium', 'low']);
+const EFFORT_LEVELS = new Set<string>(['ultracode', 'max', 'xhigh', 'high', 'medium', 'low']);
+const PERSISTED_EFFORT_LEVELS = new Set<string>(['xhigh', 'high', 'medium', 'low']);
 
 function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === 'string' && EFFORT_LEVELS.has(value);
 }
 
+function isPersistedEffortLevel(value: unknown): value is EffortLevel {
+  return typeof value === 'string' && PERSISTED_EFFORT_LEVELS.has(value);
+}
+
+function isEnvironmentEffortLevel(value: unknown): value is EffortLevel {
+  return isEffortLevel(value) && value !== 'ultracode';
+}
+
 /**
- * Short badge per effort tier. `xhigh` is shown as `xH` so it's distinct from
- * `high` (`H`) at a glance. Shared by both hosts: Claude's settings effort and
- * the reasoning level agy bakes into the model name map to the same badge.
+ * 상태줄 배지. max와 medium은 모두 M, ultracode는 U로 표시한다.
  */
 const EFFORT_BADGE: Record<EffortLevel, string> = {
+  ultracode: 'U',
+  max: 'M',
   xhigh: 'xH',
   high: 'H',
   medium: 'M',
@@ -117,12 +124,13 @@ let settingsCache: { rawEffort: unknown; fastMode: boolean; mtime: number } | nu
 async function getModelSettings(modelId: string): Promise<ModelSettings> {
   const defaultEffort = getDefaultEffort(modelId);
   const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const envEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
 
   try {
     const fileStat = await stat(settingsPath);
     if (settingsCache && settingsCache.mtime === fileStat.mtimeMs) {
       return {
-        effortLevel: isEffortLevel(settingsCache.rawEffort) ? settingsCache.rawEffort : defaultEffort,
+        effortLevel: isEnvironmentEffortLevel(envEffort) ? envEffort : isPersistedEffortLevel(settingsCache.rawEffort) ? settingsCache.rawEffort : defaultEffort,
         fastMode: settingsCache.fastMode,
       };
     }
@@ -132,15 +140,14 @@ async function getModelSettings(modelId: string): Promise<ModelSettings> {
     const fastMode = settings.fastMode === true;
     settingsCache = { mtime: fileStat.mtimeMs, rawEffort, fastMode };
     return {
-      effortLevel: isEffortLevel(rawEffort) ? rawEffort : defaultEffort,
+      effortLevel: isEnvironmentEffortLevel(envEffort) ? envEffort : isPersistedEffortLevel(rawEffort) ? rawEffort : defaultEffort,
       fastMode,
     };
   } catch {
     settingsCache = null;
   }
 
-  const envEffort = process.env.CLAUDE_CODE_EFFORT_LEVEL;
-  if (isEffortLevel(envEffort)) {
+  if (isEnvironmentEffortLevel(envEffort)) {
     return { effortLevel: envEffort, fastMode: false };
   }
 
@@ -165,7 +172,10 @@ export const modelWidget: Widget<ModelData> = {
       return { id: modelId, displayName, effortLevel: 'high', fastMode: false };
     }
 
-    const { effortLevel, fastMode } = await getModelSettings(modelId);
+    const settings = await getModelSettings(modelId);
+    const liveEffort = ctx.stdin.effort?.level;
+    const effortLevel = isEffortLevel(liveEffort) ? liveEffort : settings.effortLevel;
+    const fastMode = ctx.stdin.fast_mode ?? settings.fastMode;
     return {
       id: modelId,
       displayName,
@@ -190,7 +200,7 @@ export const modelWidget: Widget<ModelData> = {
       return `${mark} ${providerName('gemini', badge ? `${shortName} ${badge}` : shortName)}`;
     }
 
-    // Claude host: ✽ coral, effort badge from settings, fast mode.
+    // Claude 상태줄 입력을 우선 사용하고 설정은 보조값으로 사용한다.
     const shortName = shortenModelName(data.displayName);
 
     // Haiku excluded from effort badge. A space separates the name from the badge.
