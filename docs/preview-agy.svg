@@ -1,0 +1,16 @@
+<svg width="927" height="102" viewBox="0 0 927 102" xmlns="http://www.w3.org/2000/svg">
+  <!-- terminal frame -->
+  <rect width="927" height="102" rx="10" fill="#1e1e2e"/>
+  <!-- title bar -->
+  <rect width="927" height="32" rx="10" fill="#313244"/>
+  <rect y="24" width="927" height="8" fill="#313244"/>
+  <!-- traffic lights -->
+  <circle cx="20" cy="16" r="5.5" fill="#f38ba8"/>
+  <circle cx="36" cy="16" r="5.5" fill="#f9e2af"/>
+  <circle cx="52" cy="16" r="5.5" fill="#a6e3a1"/>
+  <!-- title -->
+  <text x="463.5" y="21" font-family="'JetBrains Mono','Fira Code',ui-monospace,SFMono-Regular,monospace" font-size="11" fill="#6c7086" text-anchor="middle">Antigravity (agy)</text>
+  <!-- status line output -->
+  <text x="16" y="57" font-family="'JetBrains Mono','Fira Code',ui-monospace,SFMono-Regular,monospace" font-size="13" xml:space="preserve"><tspan fill="rgb(88,141,225)" font-weight="bold">Λ</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(88,141,225)">G</tspan><tspan fill="rgb(93,149,204)">e</tspan><tspan fill="rgb(98,158,184)">m</tspan><tspan fill="rgb(103,166,163)">i</tspan><tspan fill="rgb(108,174,142)">n</tspan><tspan fill="rgb(113,183,122)">i</tspan><tspan fill="rgb(118,191,101)"> </tspan><tspan fill="rgb(132,188,90)">3</tspan><tspan fill="rgb(150,180,84)">.</tspan><tspan fill="rgb(168,171,78)">5</tspan><tspan fill="rgb(185,163,71)"> </tspan><tspan fill="rgb(203,154,65)">F</tspan><tspan fill="rgb(221,146,59)">l</tspan><tspan fill="rgb(233,138,56)">a</tspan><tspan fill="rgb(233,131,58)">s</tspan><tspan fill="rgb(233,124,61)">h</tspan><tspan fill="rgb(234,117,63)"> </tspan><tspan fill="rgb(234,110,65)">(</tspan><tspan fill="rgb(234,103,68)">M</tspan><tspan fill="rgb(234,96,70)">)</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(175,215,175)">███░░░░░░░</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(175,215,175)">27%</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> 270K/1.0M </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> 5h: </tspan><tspan fill="rgb(175,215,175)">42%</tspan><tspan fill="#cdd6f4"> (3h56m) </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> 7d: </tspan><tspan fill="rgb(255,215,135)">69%</tspan><tspan fill="#cdd6f4"> (6d3h)</tspan></text>
+  <text x="16" y="79" font-family="'JetBrains Mono','Fira Code',ui-monospace,SFMono-Regular,monospace" font-size="13" xml:space="preserve"><tspan fill="rgb(255,215,135)">📁 agent-statusline</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(255,175,215)">(main*)</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(178,178,178)">🔑 b2c3d4e5</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="rgb(178,178,178)">⏱ 37m</tspan><tspan fill="#cdd6f4"> </tspan><tspan fill="#cdd6f4" opacity="0.45">│</tspan><tspan fill="#cdd6f4"> 🔥 15K/min</tspan></text>
+</svg>

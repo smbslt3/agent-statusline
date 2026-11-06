@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so an active PR doesn't queue a full
+# npm ci + build for every intermediate push.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Tests are host-agnostic JS, but the tool is a first-class Windows/macOS
+  # target (keychain vs file credentials, curl path resolution, path handling),
+  # so run the suite on all three to catch platform-specific regressions.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+
+  # dist/index.js and dist/launcher.js are committed so plugin users don't build
+  # — but that means source edits can be pushed without recompiling, leaving the
+  # runtime bundle stale. This job fails any commit whose checked-in artifacts
+  # differ from a fresh build. Single-OS by design: esbuild is pinned to an exact
+  # version (package.json) and .gitattributes forces LF, so the bundle is
+  # byte-identical across platforms — comparing on one runner is sufficient.
+  verify-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Verify committed build is up to date
+        run: |
+          if ! git diff --exit-code -- dist/ .claude-plugin/plugin.json .claude-plugin/marketplace.json; then
+            echo "::error::Committed build artifacts are stale. Run 'npm run build' and commit dist/ plus the synced manifests."
+            git --no-pager diff --stat -- dist/ .claude-plugin/plugin.json .claude-plugin/marketplace.json
+            exit 1
+          fi

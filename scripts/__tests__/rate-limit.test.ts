@@ -1,0 +1,222 @@
+/**
+ * @covers scripts/widgets/rate-limit.ts
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  rateLimit5hWidget,
+  rateLimit7dWidget,
+  rateLimit7dSonnetWidget,
+  rateLimit7dFableWidget,
+} from '../widgets/rate-limit.js';
+import type { WidgetContext, UsageLimits, Config } from '../types.js';
+import { ICON } from '../utils/emoji.js';
+import { MOCK_TRANSLATIONS, MOCK_CONFIG, MOCK_STDIN } from './fixtures.js';
+
+// Helper to create widget context
+function createContext(rateLimits: UsageLimits | null | undefined, config?: Partial<Config>): WidgetContext {
+  return {
+    stdin: MOCK_STDIN,
+    config: { ...MOCK_CONFIG, ...config },
+    translations: MOCK_TRANSLATIONS,
+    rateLimits,
+  };
+}
+
+describe('rate-limit widgets', () => {
+  describe('rateLimit5hWidget', () => {
+    it('should return error data when rateLimits is null (API failed)', async () => {
+      const ctx = createContext(null);
+      const data = await rateLimit5hWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.isError).toBe(true);
+    });
+
+    it('should render warning icon when API failed', () => {
+      const ctx = createContext(null);
+      const errorData = { utilization: 0, resetsAt: null, isError: true };
+      const result = rateLimit5hWidget.render(errorData, ctx);
+
+      // Should contain warning emoji (with or without ANSI codes)
+      expect(result).toContain(ICON.warning);
+    });
+
+    it('should return error data when five_hour is not available', async () => {
+      const ctx = createContext({
+        five_hour: null,
+        seven_day: null,
+        seven_day_sonnet: null,
+      });
+      const data = await rateLimit5hWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.isError).toBe(true);
+    });
+
+    it('should return correct data when five_hour is available', async () => {
+      const ctx = createContext({
+        five_hour: { utilization: 45.7, resets_at: '2024-01-01T12:00:00Z' },
+        seven_day: null,
+        seven_day_sonnet: null,
+      });
+      const data = await rateLimit5hWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.utilization).toBe(46); // Rounded
+      expect(data?.resetsAt).toBe('2024-01-01T12:00:00Z');
+      expect(data?.isError).toBeUndefined();
+    });
+
+    it('should render utilization percentage', () => {
+      const ctx = createContext(null);
+      const data = { utilization: 75, resetsAt: null };
+      const result = rateLimit5hWidget.render(data, ctx);
+
+      expect(result).toContain('5h');
+      expect(result).toContain('75%');
+    });
+
+    it('should render reset as remaining time by default', () => {
+      const resetAt = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+      const ctx = createContext(null);
+      const data = { utilization: 75, resetsAt: resetAt };
+      const result = rateLimit5hWidget.render(data, ctx);
+
+      expect(result).toContain('5h');
+      expect(result).toContain('75%');
+      expect(result).toMatch(/\(\d+h\d+m\)/);
+    });
+
+    it('should render reset as clock time when configured', () => {
+      const resetAt = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+      const ctx = createContext(null, { rateLimitResetDisplay: 'resetTime' });
+      const data = { utilization: 75, resetsAt: resetAt };
+      const result = rateLimit5hWidget.render(data, ctx);
+
+      expect(result).toMatch(/\((?:[A-Z][a-z]{2} )?\d{2}:\d{2}\)/);
+      expect(result).not.toContain(' / ');
+    });
+
+    it('should render reset as remaining and clock time when configured', () => {
+      const resetAt = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+      const ctx = createContext(null, { rateLimitResetDisplay: 'both' });
+      const data = { utilization: 75, resetsAt: resetAt };
+      const result = rateLimit5hWidget.render(data, ctx);
+
+      expect(result).toMatch(/\(\d+h\d+m, (?:[A-Z][a-z]{2} )?\d{2}:\d{2}\)/);
+    });
+
+    it('should prefix the weekday for resets on a different day (e.g. 7d window)', () => {
+      const resetAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+      const ctx = createContext(null, { rateLimitResetDisplay: 'resetTime' });
+      const data = { utilization: 75, resetsAt: resetAt };
+      const result = rateLimit5hWidget.render(data, ctx);
+      expect(result).toMatch(/\((Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{2}:\d{2}\)/);
+    });
+  });
+
+  describe('rateLimit7dWidget', () => {
+    it('should return data for pro plan when seven_day is available', async () => {
+      const ctx = createContext(
+        { five_hour: null, seven_day: { utilization: 50, resets_at: null }, seven_day_sonnet: null },
+        { plan: 'pro' }
+      );
+      const data = await rateLimit7dWidget.getData(ctx);
+
+      expect(data).toEqual({ utilization: 50, resetsAt: null });
+    });
+
+    it('should return null when API failed (different from 5h widget)', async () => {
+      const ctx = createContext(null, { plan: 'max' });
+      const data = await rateLimit7dWidget.getData(ctx);
+
+      // 7d widget returns null on API failure (5h widget handles the warning)
+      expect(data).toBeNull();
+    });
+
+    it('should return data for max plan when seven_day is available', async () => {
+      const ctx = createContext(
+        { five_hour: null, seven_day: { utilization: 30, resets_at: null }, seven_day_sonnet: null },
+        { plan: 'max' }
+      );
+      const data = await rateLimit7dWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.utilization).toBe(30);
+    });
+
+    it('should render 7d label', () => {
+      const ctx = createContext(null, { plan: 'max' });
+      const data = { utilization: 50, resetsAt: null };
+      const result = rateLimit7dWidget.render(data, ctx);
+
+      expect(result).toContain('7d');
+      expect(result).toContain('50%');
+    });
+  });
+
+  describe('rateLimit7dSonnetWidget', () => {
+    it('should return null when the API does not return a seven_day_sonnet window', async () => {
+      const ctx = createContext(
+        { five_hour: null, seven_day: { utilization: 50, resets_at: null }, seven_day_sonnet: null },
+        { plan: 'pro' }
+      );
+      const data = await rateLimit7dSonnetWidget.getData(ctx);
+
+      expect(data).toBeNull();
+    });
+
+    it('should return data whenever seven_day_sonnet is present, regardless of plan config', async () => {
+      const ctx = createContext(
+        { five_hour: null, seven_day: null, seven_day_sonnet: { utilization: 25, resets_at: null } },
+        { plan: 'pro' }
+      );
+      const data = await rateLimit7dSonnetWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.utilization).toBe(25);
+    });
+
+    it('should render 7d-S label', () => {
+      const ctx = createContext(null, { plan: 'max' });
+      const data = { utilization: 60, resetsAt: null };
+      const result = rateLimit7dSonnetWidget.render(data, ctx);
+
+      expect(result).toContain('7d-S');
+      expect(result).toContain('60%');
+    });
+  });
+
+  describe('rateLimit7dFableWidget', () => {
+    it('should return null when the API does not return a seven_day_fable window', async () => {
+      const ctx = createContext({
+        five_hour: null,
+        seven_day: { utilization: 50, resets_at: null },
+        seven_day_sonnet: null,
+      });
+      const data = await rateLimit7dFableWidget.getData(ctx);
+
+      expect(data).toBeNull();
+    });
+
+    it('should return data whenever seven_day_fable is present, regardless of plan config', async () => {
+      const ctx = createContext(
+        { five_hour: null, seven_day: null, seven_day_sonnet: null, seven_day_fable: { utilization: 7, resets_at: null } },
+        { plan: 'pro' }
+      );
+      const data = await rateLimit7dFableWidget.getData(ctx);
+
+      expect(data).not.toBeNull();
+      expect(data?.utilization).toBe(7);
+    });
+
+    it('should render 7d-F label', () => {
+      const ctx = createContext(null, { plan: 'max' });
+      const data = { utilization: 15, resetsAt: null };
+      const result = rateLimit7dFableWidget.render(data, ctx);
+
+      expect(result).toContain('7d-F');
+      expect(result).toContain('15%');
+    });
+  });
+});
